@@ -1,0 +1,31 @@
+# requirements.txt - CAEI full development dependencies
+accelerate
+codetiming
+datasets
+dill
+flash-attn
+hnswlib
+hydra-core
+liger-kernel
+matplotlib
+numpy
+openai
+pandas
+peft
+pyarrow>=19.0.0
+pybind11
+pylatexenc
+pre-commit
+ray[default]
+scikit-learn
+tensordict>=0.8.0,<=0.10.0,!=0.9.0
+torchdata
+tqdm
+transformers<=4.57.3
+# vllm>=0.8.5,<=0.11.0
+wandb
+packaging>=20.0
+uvicorn
+fastapi
+httpx
+qwen-vl-utils[decord]

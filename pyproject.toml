@@ -1,0 +1,67 @@
+# -------------------------------
+# build-system
+# -------------------------------
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+# -------------------------------
+# project (PEP 621 metadata)
+# -------------------------------
+[project]
+name = "caei-agent"
+# We'll mark the version as "dynamic" because it's read from the file
+# "agent_system/version/version" (PEP 621 calls this "dynamic version").
+# The actual version is specified in the [tool.setuptools.dynamic] section below.
+dynamic = ["version", "dependencies", "optional-dependencies"]
+
+description = "CAEI：Cognitive-Aware Experience Internalization for Self-Evolving Agents"
+license = {file = "LICENSE"}
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.9"
+
+# -------------------------------
+# tool.ruff - Linting configuration
+# -------------------------------
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+isort = {known-first-party = ["agent_system", "construct", "trainer"]}
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # isort
+    "I",
+]
+ignore = [
+    # star imports
+    "F405", "F403",
+    # lambda expression assignment
+    "E731",
+    # f-string format
+    "UP032",
+    # Can remove once 3.10+ is the minimum Python version
+    "UP007",
+]
+
+# -------------------------------
+# tool.setuptools - Additional config
+# -------------------------------
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {file = "agent_system/version/version"}
+
+[tool.setuptools.package-dir]
+"" = "."

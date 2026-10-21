@@ -1,0 +1,187 @@
+"""
+Build a v2 confident-vs-hesitant thinking dataset (larger).
+
+Refined rules:
+  CONFIDENT = trajectory won + think has explicit "decision-committing"
+              markers ("I will", "the right action is", "the goal is to",...)
+              AND think contains explicit inference about why this action
+              is the right one. Not just short or repetitive.
+
+  HESITANT  = trajectory failed + think contains markers of the model
+              admitting uncertainty ("perhaps", "I'm not sure", "might be
+              wrong", "I haven't found", "not certain whether",
+              "unclear whether", "may need to", "possibly", "I will try")
+              PLUS the trajectory is in a state of indecision (multiple
+              different actions were tried recently).
+
+Output: confident_hesitant_samples_v2.json
+"""
+import argparse
+import json
+import re
+from collections import defaultdict
+
+
+CUR_ACT_THINK_RE = re.compile(
+    r"<tool_call> <tool_call>\s*(.*?)\s*<tool_call>", re.DOTALL
+)
+CUR_ACT_ACTION_RE = re.compile(
+    r"<action>(.*?)</action>", re.DOTALL
+)
+CUR_PROMPT_TASK_RE = re.compile(r"Your task is to:\s*(.+?)\.")
+OBS_NOTHING_RE = re.compile(r"Nothing happens")
+
+
+def parse_step(step):
+    curr = step.get("curr_action", "") or ""
+    think_m = CUR_ACT_THINK_RE.search(curr)
+    act_m = CUR_ACT_ACTION_RE.search(curr)
+    think = think_m.group(1).strip() if think_m else ""
+    action = act_m.group(1).strip() if act_m else ""
+    p = step.get("curr_prompt", "")
+    task_m = CUR_PROMPT_TASK_RE.search(p)
+    task = task_m.group(1).strip() if task_m else ""
+    obs = p.split("Your current observation is:")[-1][:1200] \
+        if "Your current observation is:" in p else ""
+    return {"think": think, "action": action, "task": task, "obs_excerpt": obs,
+            "nothing_happens": bool(OBS_NOTHING_RE.search(p))}
+
+
+# ===== commitment markers (confident) =====
+COMMITMENT_RE = re.compile(
+    r"\b(?:"
+    r"the (?:right|correct|optimal|best|suitable|only) action(?: to (?:take|perform))? is\b"
+    r"|the (?:plan|approach|strategy) is\b"
+    r"|I (?:will|should|need to|am going to|am about to) (?:then )?actually\b"
+    r"|this (?:is the (?:next )?)?(?:correct|right|only) (?:step|action|move|approach)\b"
+    r"|according to (?:the )?(?:above|strat|retrieved|relevant|recent)|" +
+    r"\bwe have (?:already )?(?:completed|achieved|done|finished|acquired|cleaned|heated|cooled)\b"
+    r"|(?:therefore|thus|so),?\s*(?:I|we) (?:will|should|need to|now)\b"
+    r"|(?:the )?next step(?: would| is to| should be)?\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def looks_committed(think: str) -> int:
+    """Return how many commitment markers in the think."""
+    return len(COMMITMENT_RE.findall(think))
+
+
+# ===== uncertainty markers (hesitant) =====
+UNCERTAINTY_RE = re.compile(
+    r"\b(?:"
+    r"I(?:'m| am) (?:not )?(?:sure|certain|confident)(?: about| whether)?\b"
+    r"|(?:perhaps|possibly|maybe|likely|seem[s]?|might|may)\b"
+    r"|(?:could be|may be|is (?:not|un)clear)\b"
+    r"|(?:don't|do not) know (?:whether|if|what|where|which)\b"
+    r"|(?:unclear|uncertain|unsure|confused) (?:whether|about|if|what|how)\b"
+    r"|(?:nothing happens|not (?:working|progress|advancing|succeeding))\b"
+    r"|(?:I )?(?:have|has|haven't|hasn't) (?:not yet )?(?:found|located|seen|acquired|achieved|completed)\b"
+    r"|(?:unclear|unknown|not visible|not present|missing|absent) (?:in|at|where|from)\b"
+    r"|(?:try|trying|attempt|attempting) (?:a|an)?\s*(?:different|another|alternative)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def looks_uncertain(think: str) -> int:
+    """Return how many uncertainty markers in the think."""
+    return len(UNCERTAINTY_RE.findall(think))
+
+
+def decisive_score(actions):
+    if not actions:
+        return 0
+    return len(set(actions)) / len(actions)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input_file", required=True)
+    ap.add_argument("--output_file",
+                    default="confident_hesitant_samples_v2.json")
+    ap.add_argument("--n_per_class", type=int, default=200)
+    args = ap.parse_args()
+
+    with open(args.input_file) as f:
+        data = json.load(f)
+
+    confident_pool = []   # won + think explicit "committed"
+    hesitant_pool = []    # failed + think explicit "uncertainty"
+
+    for ti, traj in enumerate(data):
+        if not traj.get("steps"):
+            continue
+        won = bool(traj.get("won"))
+        steps = traj["steps"]
+        n = len(steps)
+        if n < 6:
+            continue
+
+        # consider MIDDLE of trajectory (skip first 3 "explore" steps
+        # and last 2 "cleanup" steps)
+        for i in range(3, n - 2):
+            s = steps[i]
+            parsed = parse_step(s)
+            if not parsed["think"] or not parsed["action"]:
+                continue
+
+            recent = [parse_step(steps[j])["action"] or "?"
+                      for j in range(max(0, i - 6), i)]
+            ds = decisive_score(recent)
+            commit_n = looks_committed(parsed["think"])
+            uncert_n = looks_uncertain(parsed["think"])
+
+            entry = {
+                "task": parsed["task"],
+                "think": parsed["think"],
+                "action": parsed["action"],
+                "obs_excerpt": parsed["obs_excerpt"],
+                "env_num": s.get("env_num"),
+                "step_idx": s.get("step_idx"),
+                "traj_idx": ti,
+                "decisive_score": ds,
+                "commitment_markers": commit_n,
+                "uncertainty_markers": uncert_n,
+                "nothing_happens": parsed["nothing_happens"],
+            }
+
+            # ===== Confident =====
+            # trajectory WON + think has commitment markers + not many
+            # uncertainty markers (model has decided).
+            if (won
+                    and commit_n >= 1
+                    and uncert_n <= 1
+                    and not parsed["nothing_happens"]):
+                confident_pool.append(entry)
+
+            # ===== Hesitant =====
+            # trajectory FAILED + think has uncertainty markers.
+            if (not won
+                    and uncert_n >= 2
+                    and commit_n <= 1):
+                hesitant_pool.append(entry)
+
+    confident = [{"label": "confident", **e}
+                 for e in confident_pool[: args.n_per_class]]
+    hesitant = [{"label": "hesitant",  **e}
+                for e in hesitant_pool[: args.n_per_class]]
+
+    samples = confident + hesitant
+
+    with open(args.output_file, "w") as f:
+        json.dump(samples, f, indent=2, ensure_ascii=False)
+
+    print(f"wrote {len(samples)} samples to {args.output_file}")
+    print(f"  confident: {len(confident)} (from pool {len(confident_pool)})")
+    print(f"  hesitant:  {len(hesitant)}  (from pool {len(hesitant_pool)})")
+    print(f"\nsampling logic (deeper than v1):")
+    print(f"  CONFIDENT requires: won=True, has commitment marker,")
+    print(f"                          ≤1 uncertainty marker, no Nothing-happens.")
+    print(f"  HESITANT  requires: won=False, ≥2 uncertainty markers,")
+    print(f"                          ≤1 commitment marker.")
+
+
+if __name__ == "__main__":
+    main()
